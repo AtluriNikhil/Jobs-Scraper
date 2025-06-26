@@ -10,7 +10,6 @@ import logging
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-
 import pandas as pd
 import schedule
 from jobspy import scrape_jobs
@@ -22,8 +21,7 @@ COOP_MODE = True         # include “co-op” variants
 
 # ------------------ Job Titles ------------------
 BASE_TITLES = [
-    "Data Engineer", "Software Engineer", "Analytics Engineer",
-    "Backend Engineer", "DevOps Engineer", "SDE", "Cloud Engineer"
+    "Data Engineer", "Software Engineer"
 ]
 
 def generate_titles(base_titles, intern=INTERN_MODE, coop=COOP_MODE):
@@ -39,8 +37,8 @@ def generate_titles(base_titles, intern=INTERN_MODE, coop=COOP_MODE):
 
 # ------------------ Other Configuration ------------------
 VALID_LOCATIONS = {"USA"}
-MAX_LISTINGS = 50
-HOURS_OLD = 24
+MAX_LISTINGS = 25
+HOURS_OLD = 1
 OUTPUT_DIR = Path("job_reports")
 OUTPUT_DIR.mkdir(exist_ok=True)
 OUTPUT_FILE_UNFILTERED = OUTPUT_DIR / "Jobs_Unfiltered.xlsx"
@@ -63,10 +61,8 @@ def fetch_job_listings(job_title: str, location: str, max_listings: int) -> pd.D
     """
     Scrape up to `max_listings` from multiple sites for a given title/location.
     """
-    google_query = f"{job_title.lower()} jobs in {location.lower()} since yesterday"
-    print(google_query)
-    logger.info(f"Scraping up to {max_listings} '{job_title}' roles in {location} per site")
-    df_linkedin = scrape_jobs(
+    logger.info(f"Scraping up to {max_listings} '{job_title}' roles in {location} from Linkedin")
+    df = scrape_jobs(
         site_name=["linkedin"],
         search_term=job_title,
         location=location,
@@ -74,28 +70,10 @@ def fetch_job_listings(job_title: str, location: str, max_listings: int) -> pd.D
         hours_old=HOURS_OLD,
         linkedin_fetch_description=True
     )
-    df_indeed = scrape_jobs(
-        site_name=["indeed"],
-        search_term=job_title,
-        location=location,
-        results_wanted=max_listings,
-        hours_old=HOURS_OLD,
-        country_indeed='USA',
-    )
-    df_glassdoor = scrape_jobs(
-        site_name=["glassdoor"],
-        search_term=job_title,
-        location=location,
-        results_wanted=max_listings,
-        hours_old=HOURS_OLD,
-    )
-    if df_linkedin.empty and df_glassdoor.empty and df_indeed.empty:
+    if df.empty:
         logger.warning(f"No listings for '{job_title}' in {location}")
     else:
-        df = pd.concat([df_linkedin, df_glassdoor, df_indeed], ignore_index=True)
-        logger.info(f"Retrieved {len(df_linkedin)} listings from LinkedIn")
-        logger.info(f"Retrieved {len(df_glassdoor)} listings from Glassdoor")
-        logger.info(f"Retrieved {len(df_indeed)} listings from Indeed")
+        logger.info(f"Retrieved {len(df)} listings from LinkedIn")
     return df
 
 
@@ -125,29 +103,11 @@ def process_and_save(frames: list, existing_path: Path, output_path: Path, descr
     if existing_path.exists():
         df_exist = pd.read_excel(existing_path)
         df_all = pd.concat([df_exist, df_all], ignore_index=True)
-
-    # drop older than 2 days
-    df_all['date_posted'] = pd.to_datetime(df_all['date_posted'], errors='coerce')
-    cutoff = datetime.now() - timedelta(days=2)
-    df_all = df_all[df_all['date_posted'] >= cutoff]
-
-    # dedupe by site priority
-    priority = {"google": 0, "glassdoor": 1, "indeed": 2, "linkedin": 3}
-    df_all['priority'] = df_all['site'].map(priority).fillna(-1)
-    df_all = df_all.sort_values('priority')
+    
     df_all = df_all.drop_duplicates(
-        subset=['job_url_direct', 'title', 'company', 'location'],
-        keep='last'
+        subset=['id'],
+        keep='first'
     )
-    df_all = df_all.drop(columns=['priority'])
-
-    # sort within each query by company size
-    if 'company_size' in df_all.columns:
-        df_all = df_all.sort_values(
-            by='company_size',
-            ascending= False
-        )
-
     df_all.to_excel(output_path, index=False)
     logger.info(f"Saved {len(df_all)} {description} listings to {output_path}")
     return len(df_all)
@@ -183,7 +143,7 @@ def run_scrape_cycle():
 
 def main():
     run_scrape_cycle()
-    schedule.every(30).minutes.do(run_scrape_cycle)
+    schedule.every(10).minutes.do(run_scrape_cycle)
     logger.info("Scheduler started: scraping every 20 minutes...")
     while True:
         schedule.run_pending()
