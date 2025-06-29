@@ -18,7 +18,7 @@ from sentence_transformers import CrossEncoder
 # ------------------ Configuration Flags ------------------
 INTERN_MODE = True       # include “Intern” variants
 COOP_MODE = True         # include “co-op” variants
-
+FALLBACK_WINDOWS = [6, 12]  # fallback hours for scraping if no results found
 # ------------------ Job Titles ------------------
 BASE_TITLES = [
     "Data Engineer", "Software Engineer"
@@ -57,7 +57,7 @@ logger.info("Loading the Cross Encoder Model....")
 relevance_model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
 # ------------------ Helper Functions ------------------
 
-def fetch_job_listings(job_title: str, location: str, max_listings: int) -> pd.DataFrame:
+def fetch_job_listings(job_title: str, location: str, max_listings: int, hours_old: int = HOURS_OLD) -> pd.DataFrame:
     """
     Scrape up to `max_listings` from multiple sites for a given title/location.
     """
@@ -67,7 +67,7 @@ def fetch_job_listings(job_title: str, location: str, max_listings: int) -> pd.D
         search_term=job_title,
         location=location,
         results_wanted=max_listings,
-        hours_old=HOURS_OLD,
+        hours_old=hours_old,
         linkedin_fetch_description=True
     )
     if df.empty:
@@ -124,6 +124,19 @@ def run_scrape_cycle():
         for loc in VALID_LOCATIONS:
             df_raw = fetch_job_listings(title, loc, MAX_LISTINGS)
             if df_raw.empty:
+                for fallback_hour in FALLBACK_WINDOWS:
+                    logger.info(
+                        f"No fresh listings found for '{title}' in {loc}. Trying fallback window of {fallback_hour} hours."
+                    )
+                    df_raw = fetch_job_listings(title, loc, MAX_LISTINGS, hours_old=fallback_hour)
+                    if not df_raw.empty:
+                        logger.info(
+                            f"Found {len(df_raw)} listings after fallback window of {fallback_hour} hours."
+                        )
+                        break
+
+            if df_raw.empty:
+                logger.info(f"No listings found for '{title}' in {loc} after all attempts — skipping.")
                 continue
 
             df_raw = df_raw.assign(search_query=title, search_location=loc)
@@ -140,7 +153,6 @@ def run_scrape_cycle():
     process_and_save(filtered_frames, OUTPUT_FILE_FILTERED, OUTPUT_FILE_FILTERED, "filtered")
 
 # ------------------ Scheduler Entrypoint ------------------
-
 def main():
     run_scrape_cycle()
     schedule.every(10).minutes.do(run_scrape_cycle)
